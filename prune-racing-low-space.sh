@@ -43,9 +43,9 @@ LOG_FILE="$HOME/logs/${SCRIPT_NAME}.log"
 # ------------------
 
 COOKIE_JAR="$(mktemp)"
-TORRENTS_JSON="$(mktemp)"
+ALL_TORRENTS_JSON="$(mktemp)"
 PLAN_FILE="$(mktemp)"
-trap 'rm -f "$COOKIE_JAR" "$TORRENTS_JSON" "$PLAN_FILE"' EXIT
+trap 'rm -f "$COOKIE_JAR" "$ALL_TORRENTS_JSON" "$PLAN_FILE"' EXIT
 
 gb_to_bytes() {
   echo $(( $1 * 1024 * 1024 * 1024 ))
@@ -101,32 +101,54 @@ login() {
   [[ "$resp" == "Ok." ]]
 }
 
-fetch_torrents() {
+fetch_all_torrents() {
   curl -fsS -k \
     -b "$COOKIE_JAR" \
-    "${QBIT_BASE_URL}/api/v2/torrents/info?category=${QBIT_CATEGORY}" \
-    > "$TORRENTS_JSON"
+    "${QBIT_BASE_URL}/api/v2/torrents/info" \
+    > "$ALL_TORRENTS_JSON"
+}
+
+get_incomplete_bytes() {
+  python3 - "$ALL_TORRENTS_JSON" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+print(
+    sum(
+        max(int(t.get("amount_left", 0) or 0), 0)
+        for t in data
+        if float(t.get("progress", 0) or 0) < 1
+    )
+)
+PY
 }
 
 build_delete_plan() {
   local need_bytes="$1"
   local max_seed_seconds="$2"
 
-  python3 - "$TORRENTS_JSON" "$MIN_AGE_SECONDS" "$MIN_RATIO" "$max_seed_seconds" "$need_bytes" > "$PLAN_FILE" <<'PY'
+  python3 - "$ALL_TORRENTS_JSON" "$QBIT_CATEGORY" "$MIN_AGE_SECONDS" "$MIN_RATIO" "$max_seed_seconds" "$need_bytes" > "$PLAN_FILE" <<'PY'
 import json
 import sys
 
 path = sys.argv[1]
-min_age = int(sys.argv[2])
-min_ratio = float(sys.argv[3])
-max_seed_seconds = int(sys.argv[4])
-need_bytes = int(sys.argv[5])
+category = sys.argv[2]
+min_age = int(sys.argv[3])
+min_ratio = float(sys.argv[4])
+max_seed_seconds = int(sys.argv[5])
+need_bytes = int(sys.argv[6])
 
 with open(path, "r", encoding="utf-8") as f:
     data = json.load(f)
 
 candidates = []
 for t in data:
+    if t.get("category") != category:
+        continue
+
     torrent_hash = t.get("hash", "")
     if not torrent_hash:
         continue
@@ -187,7 +209,7 @@ delete_one() {
 }
 
 main() {
-  local min_free_bytes free_bytes pending_bytes effective_free_bytes need_bytes
+  local min_free_bytes free_bytes pending_bytes incomplete_bytes projected_free_bytes need_bytes
   local max_seed_seconds planned_total=0 planned_count=0
 
   log "=== RUN START ==="
@@ -195,29 +217,9 @@ main() {
   min_free_bytes="$(gb_to_bytes "$MIN_FREE_GB")"
   max_seed_seconds="$(days_to_seconds "$MAX_SEED_DAYS")"
   free_bytes="$(get_free_bytes)"
-
-  log "free_bytes=$free_bytes min_free_bytes=$min_free_bytes"
-
-  if (( free_bytes >= min_free_bytes )); then
-    clear_pending_bytes
-    log "Enough free space according to quota. Clearing pending state."
-    log "=== RUN END ==="
-    exit 0
-  fi
-
   pending_bytes="$(get_pending_bytes)"
-  effective_free_bytes=$((free_bytes + pending_bytes))
 
-  log "pending_bytes=$pending_bytes effective_free_bytes=$effective_free_bytes"
-
-  if (( effective_free_bytes >= min_free_bytes )); then
-    log "Quota likely lagging; recent deletions should cover the gap."
-    log "=== RUN END ==="
-    exit 0
-  fi
-
-  need_bytes=$((min_free_bytes - effective_free_bytes))
-  log "need_bytes=$need_bytes min_ratio=$MIN_RATIO max_seed_days=$MAX_SEED_DAYS"
+  log "free_bytes=$free_bytes min_free_bytes=$min_free_bytes pending_bytes=$pending_bytes"
 
   if ! login; then
     log "ERROR: qBittorrent login failed"
@@ -227,8 +229,27 @@ main() {
 
   log "qBittorrent login successful"
 
-  fetch_torrents
-  log "Fetched racing torrents from qBittorrent"
+  fetch_all_torrents
+  log "Fetched all torrents from qBittorrent"
+
+  incomplete_bytes="$(get_incomplete_bytes)"
+  projected_free_bytes=$((free_bytes + pending_bytes - incomplete_bytes))
+
+  log "incomplete_bytes=$incomplete_bytes projected_free_bytes=$projected_free_bytes"
+
+  if (( projected_free_bytes >= min_free_bytes )); then
+    if (( free_bytes >= min_free_bytes )); then
+      clear_pending_bytes
+      log "Enough projected free space. Clearing pending state."
+    else
+      log "Quota likely lagging; recent deletions should cover the projected gap."
+    fi
+    log "=== RUN END ==="
+    exit 0
+  fi
+
+  need_bytes=$((min_free_bytes - projected_free_bytes))
+  log "need_bytes=$need_bytes min_ratio=$MIN_RATIO max_seed_days=$MAX_SEED_DAYS"
 
   build_delete_plan "$need_bytes" "$max_seed_seconds"
 
