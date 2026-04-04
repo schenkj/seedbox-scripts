@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG_DIR="/home/usb488/logs"
-LOG_FILE="$LOG_DIR/delete_unpopular_torrents.log"
-mkdir -p "$LOG_DIR"
-exec >>"$LOG_FILE" 2>&1
-
 log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
+
+# ----- config -----
+SCRIPT_NAME="prune-racing-low-space"
+QBIT_CATEGORY="racing"
+
+MIN_FREE_GB=80
+MIN_AGE_SECONDS=1800
+MIN_RATIO=0
+MAX_SEED_DAYS=1   # don't delete before, if below min ratio
+PENDING_TTL_SECONDS=60
+
+LOG_DIR="$HOME/logs"
+STATE_FILE="/tmp/${SCRIPT_NAME}.state"
+LOG_FILE="$HOME/logs/${SCRIPT_NAME}.log"
+# ------------------
+
+mkdir -p "$LOG_DIR"
+exec >>"$LOG_FILE" 2>&1
 
 LOCK_FILE="/tmp/prune-racing-low-space.lock"
 exec 9>"$LOCK_FILE"
@@ -27,20 +40,6 @@ source "$SECRETS_FILE"
 : "${QBIT_USERNAME:?QBIT_USERNAME not set}"
 : "${QBIT_PASSWORD:?QBIT_PASSWORD not set}"
 # ------------------------
-
-# ----- config -----
-SCRIPT_NAME="prune-racing-low-space"
-QBIT_CATEGORY="racing"
-
-MIN_FREE_GB=80
-MIN_AGE_SECONDS=1800
-MIN_RATIO=0
-MAX_SEED_DAYS=1   # don't delete before, if below min ratio
-PENDING_TTL_SECONDS=60
-
-STATE_FILE="/tmp/${SCRIPT_NAME}.state"
-LOG_FILE="$HOME/logs/${SCRIPT_NAME}.log"
-# ------------------
 
 COOKIE_JAR="$(mktemp)"
 ALL_TORRENTS_JSON="$(mktemp)"
