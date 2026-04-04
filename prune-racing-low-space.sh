@@ -5,6 +5,14 @@ log() {
   printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
+format_bytes_to_gb() {
+  python3 - "$1" <<'PY'
+import sys
+
+print(f"{int(sys.argv[1]) / (1024 ** 3):.2f}")
+PY
+}
+
 # ----- config -----
 SCRIPT_NAME="prune-racing-low-space"
 QBIT_CATEGORY="racing"
@@ -260,7 +268,8 @@ main() {
 
   while IFS=$'\t' read -r hash stored_bytes popularity ratio seeding_time name; do
     [[ -n "${hash:-}" ]] || continue
-    log "Deleting: popularity=$popularity ratio=$ratio seeding_time=$seeding_time bytes=$stored_bytes hash=$hash name=$name"
+    log \
+      "Deleting: popularity=$(printf '%.2f' "$popularity") ratio=$(printf '%.2f' "$ratio") seeding_hours=$(printf '%.2f' "$(awk "BEGIN { print ${seeding_time} / 3600 }")") size_gb=$(format_bytes_to_gb "$stored_bytes") hash=$hash name=$name"
     delete_one "$hash"
     planned_total=$((planned_total + stored_bytes))
     planned_count=$((planned_count + 1))
