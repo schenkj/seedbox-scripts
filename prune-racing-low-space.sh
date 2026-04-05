@@ -17,7 +17,7 @@ PY
 SCRIPT_NAME="prune-racing-low-space"
 QBIT_CATEGORY="racing"
 
-MIN_FREE_GB=80
+MIN_FREE_GB=64
 MIN_AGE_SECONDS=1800
 MIN_RATIO=0
 MAX_SEED_DAYS=1   # don't delete before, if below min ratio
